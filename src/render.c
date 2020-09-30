@@ -333,7 +333,7 @@ void render(session_t *ps, int x, int y, int dx, int dy, int wid, int hei, int f
 #ifdef CONFIG_OPENGL
 	case BKEND_GLX:
 		glx_render(ps, ptex, x, y, dx, dy, wid, hei, ps->psglx->z, opacity, argb,
-		           neg, reg_paint, pprogram);
+		           neg, cr, reg_paint, pprogram);
 		ps->psglx->z += 1;
 		break;
 #endif
@@ -1112,6 +1112,18 @@ void paint_all(session_t *ps, struct managed_win *t, bool ignore_damage) {
 
 		if (pixman_region32_not_empty(&reg_tmp)) {
 			set_tgt_clip(ps, &reg_tmp);
+
+#ifdef CONFIG_OPENGL
+			// If rounded corners backup the region first
+			if (w->corner_radius > 0) {
+				const int16_t x = w->g.x;
+				const int16_t y = w->g.y;
+				const auto wid = to_u16_checked(w->widthb);
+				const auto hei = to_u16_checked(w->heightb);
+				glx_bind_texture(ps, &w->glx_texture_bg, x, y, wid, hei, false);
+			}
+#endif
+
 			// Blur window background
 			if (w->blur_background &&
 			    (w->mode == WMODE_TRANS ||
@@ -1121,6 +1133,19 @@ void paint_all(session_t *ps, struct managed_win *t, bool ignore_damage) {
 
 			// Painting the window
 			paint_one(ps, w, &reg_tmp);
+
+#ifdef CONFIG_OPENGL
+			// Rounded corners for XRender is implemented inside render()
+			// Round window corners
+			if (w->corner_radius > 0) {
+				const auto wid = to_u16_checked(w->widthb);
+				const auto hei = to_u16_checked(w->heightb);
+				glx_round_corners_dst0(
+				    ps, w, w->glx_texture_bg, 0, w->g.x, w->g.y, wid, hei,
+				    (float)ps->psglx->z - 0.5f, (float)w->corner_radius,
+				    reg_paint, &w->glx_round_cache);
+			}
+#endif
 		}
 	}
 
@@ -1210,7 +1235,7 @@ void paint_all(session_t *ps, struct managed_win *t, bool ignore_damage) {
 			glFlush();
 		glXWaitX();
 		glx_render(ps, ps->tgt_buffer.ptex, 0, 0, 0, 0, ps->root_width,
-		           ps->root_height, 0, 1.0, false, false, &region, NULL);
+		           ps->root_height, 0, 1.0, false, false, 0, &region, NULL);
 		fallthrough();
 	case BKEND_GLX: glXSwapBuffers(ps->dpy, get_tgt_window(ps)); break;
 #endif
@@ -1373,6 +1398,18 @@ bool init_render(session_t *ps) {
 			log_error("Failed to create shadow picture.");
 			return false;
 		}
+	}
+
+	// Initialize our rounded corners fragment shader
+	if (ps->o.corner_radius > 0 && ps->o.backend == BKEND_GLX) {
+#ifdef CONFIG_OPENGL
+		if (!glx_init_rounded_corners(ps)) {
+			log_error("Failed to init rounded corners shader.");
+			return false;
+		}
+#else
+		assert(false);
+#endif
 	}
 	return true;
 }
